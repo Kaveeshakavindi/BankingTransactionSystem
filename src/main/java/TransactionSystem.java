@@ -1,93 +1,70 @@
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
 
 class TransactionSystem {
+    //stores BankAccount objects with the account ID as key
     private final Map<Integer, BankAccount> accounts;
-    private static final long LOCK_TIMEOUT_SECONDS = 5;
 
     public TransactionSystem(List<BankAccount> accountList) {
-        this.accounts = new ConcurrentHashMap<>();
+        accounts = new HashMap<>();
+
+        //adds each bank account to accounts map
         for (BankAccount account : accountList) {
             accounts.put(account.getId(), account);
         }
     }
 
-    private void acquireLocks(BankAccount first, BankAccount second) throws InterruptedException {
-        boolean firstLockAcquired = false;
-        boolean secondLockAcquired = false;
-
-        try {
-            // Try to acquire both write locks with timeout using new methods
-            firstLockAcquired = first.tryLockForWriting(LOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!firstLockAcquired) {
-                throw new InterruptedException("Timeout acquiring first lock");
-            }
-
-            secondLockAcquired = second.tryLockForWriting(LOCK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!secondLockAcquired) {
-                throw new InterruptedException("Timeout acquiring second lock");
-            }
-        } catch (InterruptedException e) {
-            if (firstLockAcquired) {
-                first.unlockWriting();
-            }
-            throw e;
-        }
-    }
-
-    private void releaseLocks(BankAccount first, BankAccount second) {
-        second.unlockWriting();
-        first.unlockWriting();
-    }
-
     public boolean transfer(int fromAccountId, int toAccountId, double amount) {
-        if (fromAccountId == toAccountId) {
-            throw new IllegalArgumentException("Cannot transfer to same account");
-        }
-
         BankAccount fromAccount = accounts.get(fromAccountId);
         BankAccount toAccount = accounts.get(toAccountId);
 
-        if (fromAccount == null || toAccount == null) {
-            throw new IllegalArgumentException("Invalid account ID");
-        }
-
-        // Always acquire locks in order of account ID to prevent deadlock
-        BankAccount firstLock = fromAccount.getId() < toAccount.getId() ? fromAccount : toAccount;
-        BankAccount secondLock = fromAccount.getId() < toAccount.getId() ? toAccount : fromAccount;
+        //determines which account to lock to avoid deadlock
+        BankAccount firstLock = fromAccountId < toAccountId ? fromAccount : toAccount;
+        BankAccount secondLock = fromAccountId < toAccountId ? toAccount : fromAccount;
+        //locks both accounts in a consistent order
+        firstLock.lock();
+        secondLock.lock();
 
         try {
-            acquireLocks(firstLock, secondLock);
-
+            //insufficient funds in from account handle
             if (fromAccount.getBalance() < amount) {
+                System.out.println("Insufficient funds in Account " + fromAccountId);
                 return false;
             }
-
+            //withdraw from fromAccount
             fromAccount.withdraw(amount);
-            toAccount.deposit(amount);
-            return true;
 
-        } catch (InterruptedException e) {
+            //deposit into deposit account
+            toAccount.deposit(amount);
+
+            //success message for better demonstration
+            System.out.println("Transferred $" + amount + " from Account " + fromAccountId + " to Account " + toAccountId);
+            return true;
+        } catch (Exception e) {
+            System.out.println("Transfer failed: " + e.getMessage());
+            reverseTransaction(fromAccountId, toAccountId, amount);
             return false;
         } finally {
-            releaseLocks(firstLock, secondLock);
+            //unlock the accounts in reverse order :
+            //given the scenario where thread 1 locks account 1 and then account 2
+            //then thread2 lock account 2 and then account 1
+            //If both threads hold their first lock and are waiting for the other lock, a deadlock occurs
+            //Unlocking in reverse order ensures that any partial locking
+            // (e.g., Thread A holds Account 1 and Thread B holds Account 2)
+            // is safely released without waiting indefinitely.
+            secondLock.unlock();
+            firstLock.unlock();
         }
     }
 
+    // safely reverse a transaction if an error occurs during the transfer
     public void reverseTransaction(int fromAccountId, int toAccountId, double amount) {
         transfer(toAccountId, fromAccountId, amount);
     }
-
+    //created this method for better demonstration purposes
+    //gets the final account balances
     public void printAccountBalances() {
-        accounts.values().forEach(account -> {
-            account.lockForReading();
-            try {
-                System.out.printf("Account %d: %.2f%n", account.getId(), account.getBalance());
-            } finally {
-                account.unlockReading();
-            }
-        });
+        for (BankAccount account : accounts.values()) {
+            System.out.println("Account " + account.getId() + ": Balance $" + account.getBalance());
+        }
     }
 }
